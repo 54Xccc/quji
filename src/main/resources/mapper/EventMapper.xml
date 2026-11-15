@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.hmdp.mapper.EventMapper">
+  <select id="myRegistrations" resultType="map">
+    SELECT CAST(o.id AS CHAR) AS id, o.voucher_id AS session_id, o.title_snapshot AS session_title,
+           o.admission_code, o.status+0 AS status, o.use_time AS checked_in_at,
+           s.id AS event_id, s.name AS event_name, s.venue_name, s.address, v.session_starts_at
+    FROM tb_voucher_order o
+    JOIN tb_voucher v ON v.id = o.voucher_id
+    JOIN tb_shop s ON s.id = o.shop_id_snapshot
+    WHERE o.user_id = #{owner} AND o.admission_code IS NOT NULL
+    ORDER BY o.create_time DESC, o.id DESC
+  </select>
+
+  <update id="checkIn">
+    UPDATE tb_voucher_order o
+    JOIN tb_voucher v ON v.id = o.voucher_id
+    SET o.status = 3, o.use_time = #{now}, o.checked_in_by = #{operator}
+    WHERE o.admission_code = #{code} AND o.status = 2
+      AND #{now} &gt;= TIMESTAMPADD(MINUTE, -30, v.session_starts_at)
+      AND #{now} &lt; v.session_ends_at
+  </update>
+</mapper>

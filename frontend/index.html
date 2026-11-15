@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="趣集，发现杭州同城活动，报名参加并分享活动体验。">
+    <meta name="theme-color" content="#f7f4eb">
+    <title>趣集 · 同城活动</title>
+    <link rel="stylesheet" href="/assets/quji.css">
+    <script defer src="/vendor/vue.js"></script>
+    <script type="module" src="/scripts/quji.js"></script>
+  </head>
+  <body>
+    <noscript>请启用 JavaScript 浏览趣集活动。</noscript>
+    <div id="app" v-cloak>
+      <a class="skip" href="#main" @click.prevent="$refs.main.focus()">跳到主要内容</a>
+      <header class="top">
+        <div class="shell top-inner">
+          <a href="#discover" class="brand" aria-label="趣集首页"><span class="brand-mark" aria-hidden="true">趣</span>趣集</a>
+          <nav aria-label="主导航">
+            <a href="#discover" :aria-current="view === 'discover' ? 'page' : null">发现活动</a>
+            <a href="#community" :aria-current="view === 'community' ? 'page' : null">活动交流</a>
+            <a href="#mine" :aria-current="view === 'mine' ? 'page' : null">我的报名</a>
+            <a v-if="admin" href="#staff" :aria-current="view === 'staff' ? 'page' : null">活动管理</a>
+          </nav>
+          <a v-if="!user" class="pill" href="#login">登录</a>
+          <button v-else class="quiet" type="button" @click="logout">退出登录</button>
+        </div>
+      </header>
+
+      <main id="main" ref="main" class="shell" tabindex="-1">
+        <p v-if="error" class="notice error" role="alert">{{ error }}</p>
+        <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+
+        <template v-if="view === 'discover'">
+          <section class="hero">
+            <div>
+              <span class="eyebrow">中国 · 杭州</span>
+              <h1>在城里，<br>遇见有趣的人。</h1>
+              <p>从一场湖畔读书会到一次溪谷徒步，<br>找一件想做的事，给周末留点时间。</p>
+              <a class="pill light" href="#catalog" @click.prevent="scrollCatalog">探索活动 <span aria-hidden="true">↓</span></a>
+            </div>
+            <img src="/assets/hangzhou-terrace.png" alt="杭州湖畔的露台和远山" fetchpriority="high">
+          </section>
+          <section id="catalog" class="section">
+            <div class="section-head"><h2>发现活动</h2><span v-if="!loading">{{ total }} 场活动</span></div>
+            <form class="filters" @submit.prevent="search">
+              <label class="sr-only" for="keyword">搜索活动名称</label>
+              <input id="keyword" v-model.trim="keyword" maxlength="60" placeholder="搜索活动名称">
+              <button class="pill" type="submit">搜索</button>
+              <button class="pill outline" type="button" @click="locate" :disabled="locating">{{ coords ? '更新位置' : '查找附近' }}</button>
+              <button v-if="coords" class="quiet" type="button" @click="clearLocation">清除位置</button>
+            </form>
+            <div class="tabs" aria-label="活动分类">
+              <button v-for="name in [''].concat(categories)" :key="name" type="button"
+                      :aria-pressed="category === name" @click="chooseCategory(name)">{{ name || '全部活动' }}</button>
+            </div>
+            <p v-if="coords" class="muted">显示 10 公里内的活动，按距离排序。</p>
+            <p v-if="loading" role="status">正在加载活动…</p>
+            <p v-else-if="!events.length" class="empty">没有找到符合条件的活动。</p>
+            <div v-else class="cards">
+              <a v-for="event in events" :key="event.id" class="event-card" :href="'#event/' + event.id">
+                <div class="card-art" :class="art(event.eventCategory)" aria-hidden="true"><span>{{ artMark(event.eventCategory) }}</span></div>
+                <div class="card-body">
+                  <span class="category">{{ event.eventCategory }}</span>
+                  <h3>{{ event.name }}</h3>
+                  <p>{{ event.venueName }}<span v-if="event.distance != null"> · {{ distance(event.distance) }}</span></p>
+                  <p class="description">{{ event.eventDescription }}</p>
+                  <span class="link-text">查看场次 <span aria-hidden="true">→</span></span>
+                </div>
+              </a>
+            </div>
+            <div v-if="total > 12" class="pager">
+              <button class="quiet" :disabled="page <= 1" @click="loadEvents(page - 1)">上一页</button>
+              <span>第 {{ page }} 页</span>
+              <button class="quiet" :disabled="page * 12 >= total" @click="loadEvents(page + 1)">下一页</button>
+            </div>
+          </section>
+          <section v-if="ranking.length" class="section rankings">
+            <div class="section-head"><h2>同城热榜</h2><span>最近 60 分钟</span></div>
+            <ol><li v-for="rank in ranking" :key="rank.shop_id"><a :href="'#event/' + rank.shop_id">{{ rank.name }}</a><span>{{ rank.pv }} 次浏览 · {{ rank.orders }} 人报名</span></li></ol>
+          </section>
+        </template>
+
+        <section v-if="view === 'event'" class="section detail">
+          <a class="back" href="#discover">← 返回活动</a>
+          <p v-if="loading" role="status">正在加载活动…</p>
+          <template v-if="event">
+            <div class="detail-hero" :class="art(event.eventCategory)">
+              <span class="category">{{ event.eventCategory }}</span>
+              <h1>{{ event.name }}</h1>
+              <p>{{ event.venueName }} · {{ event.address }}</p>
+              <a v-if="admin" :href="'#staff/' + event.id">管理此活动 →</a>
+            </div>
+            <div class="detail-grid">
+              <div>
+                <h2>活动介绍</h2><p class="preserve">{{ event.eventDescription }}</p>
+                <h2>活动体验</h2>
+                <a :href="'#community/' + event.id">查看和分享活动体验 →</a>
+              </div>
+              <div>
+                <h2>选择报名场次</h2>
+                <p v-if="!sessions.length" class="empty">还没有开放的场次。</p>
+                <article v-for="session in sessions" :key="session.id" class="panel session">
+                  <h3>{{ session.title }}</h3>
+                  <p>{{ date(session.sessionStartsAt) }} 开始</p>
+                  <p class="muted">报名开放 {{ date(session.beginTime) }} 至 {{ date(session.endTime) }}</p>
+                  <p>{{ session.rules }}</p>
+                  <div class="session-actions">
+                    <span>{{ session.stock > 0 ? '余量 ' + session.stock + ' 人' : '名额已满' }} · 免费</span>
+                    <button class="pill" :disabled="!session.orderable || busy" @click="register(session)">{{ session.orderable ? '立即报名' : '暂不可报名' }}</button>
+                  </div>
+                </article>
+                <a v-if="pending.length" href="#mine">查看我的报名进度 →</a>
+              </div>
+            </div>
+          </template>
+        </section>
+
+        <section v-if="view === 'mine'" class="section narrow">
+          <h1>我的报名</h1>
+          <p v-if="!user"><a class="pill" href="#login" @click.prevent="needUser">登录后查看报名</a></p>
+          <template v-else>
+            <div class="panel sign">
+              <p>{{ user.nickName }} · 已连续打卡 {{ signCount }} 天</p>
+              <button class="pill outline" :disabled="busy" @click="signIn">今日打卡</button>
+            </div>
+            <article v-for="request in pending" :key="request.id" class="panel">
+              <h3>{{ request.title }}</h3>
+              <p role="status">{{ requestStatus(request.state) }}</p>
+              <button v-if="request.state === 'FAILED'" class="quiet" @click="removePending(request.id)">清除此记录</button>
+            </article>
+            <p v-if="loading" role="status">正在加载报名…</p>
+            <p v-else-if="!registrations.length && !pending.length" class="empty">还没有报名记录。<a href="#discover">去发现活动</a></p>
+            <article v-for="registration in registrations" :key="registration.id" class="panel">
+              <span class="category">{{ registration.status === 3 ? '已入场' : '报名成功' }}</span>
+              <h3><a :href="'#event/' + registration.event_id">{{ registration.event_name }}</a> · {{ registration.session_title }}</h3>
+              <p>{{ date(registration.session_starts_at) }} · {{ registration.venue_name }}</p>
+              <p>{{ registration.address }}</p>
+              <div v-if="registration.status === 2" class="ticket"><span>入场码</span><code>{{ registration.admission_code }}</code><button class="quiet" @click="copyCode(registration.admission_code)">复制</button></div>
+              <p v-if="registration.checked_in_at">核验时间 {{ date(registration.checked_in_at) }}</p>
+            </article>
+            <div v-if="total > 12" class="pager">
+              <button class="quiet" :disabled="page <= 1" @click="loadRegistrations(page - 1)">上一页</button>
+              <span>第 {{ page }} 页</span>
+              <button class="quiet" :disabled="page * 12 >= total" @click="loadRegistrations(page + 1)">下一页</button>
+            </div>
+          </template>
+        </section>
+
+        <section v-if="view === 'community'" class="section narrow">
+          <a v-if="event" class="back" :href="'#event/' + event.id">← {{ event.name }}</a>
+          <h1>{{ event ? '活动体验' : '活动交流' }}</h1>
+          <p v-if="!event" class="muted">打开任意活动，分享图文体验。</p>
+          <div v-if="!event" class="tabs">
+            <button :aria-pressed="!following" @click="showCommunity(false)">最新体验</button>
+            <button :aria-pressed="following" @click="showCommunity(true)">关注动态</button>
+          </div>
+          <form v-if="event && user" class="panel form" @submit.prevent="publishNote">
+            <h2>分享我的体验</h2>
+            <label>标题<input v-model.trim="note.title" required maxlength="255"></label>
+            <label>正文<textarea v-model.trim="note.content" required maxlength="10000" rows="4"></textarea></label>
+            <label>图片<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" @change="selectImages" multiple></label>
+            <div v-if="note.files.length" class="muted">已选择 {{ note.files.length }} 张图片</div>
+            <button class="pill" type="submit" :disabled="busy">发布体验</button>
+          </form>
+          <p v-if="event && !user"><button class="pill outline" @click="needUser">登录后分享体验</button></p>
+          <p v-if="!notes.length" class="empty">{{ loading ? '正在加载体验…' : '暂时没有体验动态。' }}</p>
+          <article v-for="note in notes" :key="note.id" class="panel note">
+            <span class="category">{{ note.name || '参与者' }}</span>
+            <h3>{{ note.title }}</h3>
+            <p class="preserve">{{ note.content }}</p>
+            <div v-if="note.images" class="note-images"><img v-for="(src, index) in images(note.images)" :key="index" :src="src" loading="lazy" alt="活动体验照片"></div>
+            <div class="session-actions">
+              <button class="quiet" :aria-pressed="Boolean(note.isLike)" :disabled="busy" @click="like(note)">{{ note.isLike ? '已点赞' : '点赞' }} {{ note.liked || 0 }}</button>
+              <button v-if="!user || String(note.userId) !== String(user.id)" class="quiet" :disabled="busy" @click="follow(note.userId)">{{ followed[note.userId] ? '取消关注' : '关注作者' }}</button>
+              <a v-if="!event" :href="'#event/' + note.shopId">查看活动 →</a>
+            </div>
+          </article>
+          <button v-if="notesMore" class="pill outline" :disabled="loading" @click="loadNotes(false)">加载更多</button>
+        </section>
+
+        <section v-if="view === 'staff'" class="section narrow">
+          <h1>活动管理</h1>
+          <p v-if="!user"><button class="pill" @click="needUser">登录管理</button></p>
+          <p v-else-if="!admin" class="empty">当前账号没有活动管理权限。</p>
+          <template v-else>
+            <form v-if="!eventId || event" class="panel form" @submit.prevent="saveEvent">
+              <h2>{{ eventId ? '编辑活动' : '发布活动' }}</h2>
+              <label>活动名称<input v-model.trim="eventForm.name" required maxlength="128"></label>
+              <label>分类<select v-model="eventForm.eventCategory" required><option value="">选择分类</option><option v-for="name in categories" :key="name">{{ name }}</option></select></label>
+              <label>场地名称<input v-model.trim="eventForm.venueName" required maxlength="128"></label>
+              <label>集合地址<input v-model.trim="eventForm.address" required maxlength="255"></label>
+              <div class="field-row">
+                <label>经度<input v-model.number="eventForm.x" type="number" min="0.001" max="180" step="any" required></label>
+                <label>纬度<input v-model.number="eventForm.y" type="number" min="0.001" max="85" step="any" required></label>
+              </div>
+              <label>活动介绍<textarea v-model.trim="eventForm.eventDescription" rows="4" required maxlength="2000"></textarea></label>
+              <button class="pill" type="submit" :disabled="busy">保存活动</button>
+            </form>
+            <form v-if="eventId && event" class="panel form" @submit.prevent="publishSession">
+              <h2>新增场次</h2>
+              <p class="muted">场次时间按北京时间填写。</p>
+              <label>场次名称<input v-model.trim="sessionForm.title" required maxlength="100"></label>
+              <label>名额<input v-model.number="sessionForm.stock" type="number" min="1" max="100000" required></label>
+              <div class="field-row">
+                <label>报名开放<input v-model="sessionForm.beginTime" type="datetime-local" required></label>
+                <label>报名截止<input v-model="sessionForm.endTime" type="datetime-local" required></label>
+                <label>活动开始<input v-model="sessionForm.sessionStartsAt" type="datetime-local" required></label>
+                <label>活动结束<input v-model="sessionForm.sessionEndsAt" type="datetime-local" required></label>
+              </div>
+              <label>入场须知<textarea v-model.trim="sessionForm.rules" required maxlength="1000" rows="3"></textarea></label>
+              <button class="pill" type="submit" :disabled="busy">发布免费场次</button>
+              <a :href="'#event/' + eventId">查看活动页面 →</a>
+            </form>
+            <form class="panel form" @submit.prevent="checkIn">
+              <h2>入场核验</h2>
+              <label>参与者入场码<input v-model.trim="admissionCode" required maxlength="36" autocomplete="off"></label>
+              <button class="pill" type="submit" :disabled="busy">核验入场</button>
+            </form>
+          </template>
+        </section>
+
+        <section v-if="view === 'login'" class="section narrow">
+          <h1>登录趣集</h1>
+          <form class="panel form" @submit.prevent="login">
+            <label>手机号<input v-model.trim="phone" type="tel" inputmode="numeric" pattern="1[0-9]{10}" required autocomplete="tel"></label>
+            <label>验证码<input v-model.trim="code" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code"></label>
+            <div class="session-actions">
+              <button class="pill" type="submit" :disabled="busy">登录</button>
+              <button class="pill outline" type="button" :disabled="busy || !/^1[0-9]{10}$/.test(phone)" @click="sendCode">获取验证码</button>
+            </div>
+            <p class="muted">演示环境的验证码可在服务端日志查看。</p>
+          </form>
+        </section>
+      </main>
+
+      <footer class="footer"><div class="shell"><a href="#discover" class="brand">趣集</a><a href="/experience.html">技术体验</a></div></footer>
+    </div>
+  </body>
+</html>

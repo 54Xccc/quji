@@ -12,6 +12,7 @@ public class BusinessEvent {
   private long aggregateId;
   private long occurredAt;
   private Long deliverAt;
+  private String deliveryId;
 
   public static BusinessEvent from(BusinessOutboxTask task) {
     BusinessEvent event = new BusinessEvent();
@@ -19,6 +20,7 @@ public class BusinessEvent {
     event.kind = task.getKind();
     event.aggregateId = task.getAggregateId();
     event.occurredAt = task.getCreatedAt().getTime();
+    event.deliveryId = task.getDeliveryId();
     if (task.getDeliverAt() != null) {
       event.deliverAt = task.getDeliverAt().getTime();
     }

@@ -32,7 +32,7 @@ import org.springframework.test.annotation.DirtiesContext;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "hmdp.experience.enabled=true", "hmdp.analytics.enabled=true",
-      "hmdp.analytics.group=hmdp-experience-integration", "hmdp.mq.enabled=false",
+      "hmdp.analytics.group=hmdp-experience-integration", "hmdp.business-kafka.enabled=false",
       "citylens.reliability.scheduling-enabled=false"
     })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)

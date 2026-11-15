@@ -82,6 +82,9 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
         || event.getAggregateId() != task.getAggregateId()) {
       throw new IllegalArgumentException("消息内容与持久化事件不一致");
     }
+    if (event.getDeliveryId() != null && !event.getDeliveryId().equals(task.getDeliveryId())) {
+      return;
+    }
     if (messageMapper.countInboxEvent(group, event.getEventId()) > 0) {
       businessOutboxMapper.markDuplicateDone(event.getEventId());
       metrics.counter("hmdp.mq.consumptions", "group", group, "result", "duplicate").increment();
@@ -105,75 +108,73 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
         task.getKind(), task.getAggregateId(), task.getUserId(), cursor, task.getCreatedAt());
   }
 
-  /**
-   * 保存消费失败并决定 Broker 是否可以确认当前消息。
-   *
-   * @return true 表示对应任务已经完成，或失败已持久隔离；false 表示仍需重新投递。 无效载荷按 Broker 消息身份隔离，不能借其 eventId 把其他真实任务标成
-   *     REVIEW。
-   */
+  /** 将重试或复核状态持久化后，消费者才可提交 Kafka offset。 */
   @Override
-  public boolean recordConsumptionFailure(
+  public void recordConsumptionFailure(
       BusinessEvent event,
       String group,
       String brokerId,
       String payload,
-      RuntimeException failure,
-      int deliveries) {
-    return Boolean.TRUE.equals(
-        transactions.execute(
-            tx -> {
-              boolean valid = false;
-              if (event != null && event.getEventId() > 0) {
-                BusinessOutboxTask task =
-                    businessOutboxMapper.selectEventForUpdate(event.getEventId());
-                if (task != null) {
-                  try {
-                    valid =
-                        event.getSchemaVersion() == 1
-                            && group.equals(resolveConsumerGroup(event.getKind()))
-                            && Objects.equals(event.getKind(), task.getKind())
-                            && event.getAggregateId() == task.getAggregateId();
-                  } catch (RuntimeException invalid) {
-                    valid = false;
-                  }
-                  if (valid && OutboxState.DONE.matches(task.getState())) {
-                    return true;
-                  }
-                  if (valid) {
-                    businessOutboxMapper.recordConsumeFailure(
-                        FailureMessages.summarize(failure), event.getEventId());
-                  }
-                }
-              }
-              if (valid && deliveries < DeliveryRetryPolicy.MAX_CONSUME_ATTEMPTS) {
-                return false;
-              }
-              String key = valid ? "outbox:" + event.getEventId() : "broker:" + brokerId;
-              messageMapper.insertFailure(
-                  group,
-                  key,
-                  valid ? event.getEventId() : null,
-                  brokerId,
-                  payload,
-                  FailureMessages.summarize(failure));
-              if (valid) {
-                businessOutboxMapper.markReview(event.getEventId());
-              }
-              if (valid && "SECKILL_FULFILL".equals(event.getKind())) {
-                if (seckillReservationMapper.markProcessingForReview(
-                        FailureMessages.summarize(failure), event.getAggregateId())
-                    > 0) {
-                  seckillReservationMapper.insertDeadLetter(
-                      "mq:outbox:" + event.getEventId(),
-                      event.getAggregateId(),
-                      payload,
-                      FailureMessages.summarize(failure));
-                }
-              }
-              metrics
-                  .counter("hmdp.mq.consumptions", "group", group, "result", "quarantined")
-                  .increment();
-              return true;
-            }));
+      RuntimeException failure) {
+    String reason = FailureMessages.summarize(failure);
+    transactions.execute(
+        tx -> {
+          BusinessOutboxTask task = matchedTask(event, group);
+          if (task == null) {
+            messageMapper.insertFailure(
+                group, "broker:" + brokerId, null, brokerId, payload, reason);
+            metrics
+                .counter("hmdp.mq.consumptions", "group", group, "result", "quarantined")
+                .increment();
+            return null;
+          }
+          // A redelivery of the same record cannot spend another retry or undo a newer result.
+          if (!event.getDeliveryId().equals(task.getDeliveryId())
+              || OutboxState.DONE.matches(task.getState())
+              || OutboxState.REVIEW.matches(task.getState())) {
+            return null;
+          }
+          int attempts = task.getConsumeAttempts() + 1;
+          if (attempts < DeliveryRetryPolicy.MAX_CONSUME_ATTEMPTS) {
+            businessOutboxMapper.scheduleConsumeRetry(
+                reason, DeliveryRetryPolicy.delaySeconds(attempts), task.getId());
+            metrics.counter("hmdp.mq.consumptions", "group", group, "result", "retry").increment();
+            return null;
+          }
+          moveToReview(task, group, brokerId, payload, reason);
+          return null;
+        });
+  }
+
+  private BusinessOutboxTask matchedTask(BusinessEvent event, String group) {
+    if (event == null
+        || event.getEventId() <= 0
+        || event.getSchemaVersion() != 1
+        || event.getDeliveryId() == null
+        || "invalid".equals(group)) {
+      return null;
+    }
+    BusinessOutboxTask task = businessOutboxMapper.selectEventForUpdate(event.getEventId());
+    if (task == null
+        || !Objects.equals(event.getKind(), task.getKind())
+        || event.getAggregateId() != task.getAggregateId()
+        || !group.equals(resolveConsumerGroup(task.getKind()))) {
+      return null;
+    }
+    return task;
+  }
+
+  private void moveToReview(
+      BusinessOutboxTask task, String group, String brokerId, String payload, String reason) {
+    long id = task.getId();
+    businessOutboxMapper.recordConsumeFailure(reason, id);
+    messageMapper.insertFailure(group, "outbox:" + id, id, brokerId, payload, reason);
+    businessOutboxMapper.markReview(id);
+    if ("SECKILL_FULFILL".equals(task.getKind())
+        && seckillReservationMapper.markProcessingForReview(reason, task.getAggregateId()) > 0) {
+      seckillReservationMapper.insertDeadLetter(
+          "mq:outbox:" + id, task.getAggregateId(), payload, reason);
+    }
+    metrics.counter("hmdp.mq.consumptions", "group", group, "result", "quarantined").increment();
   }
 }

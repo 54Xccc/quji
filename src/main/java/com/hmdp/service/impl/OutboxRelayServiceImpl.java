@@ -41,16 +41,16 @@ public class OutboxRelayServiceImpl implements IOutboxRelayService {
   private final AtomicLong review = new AtomicLong();
   private final AtomicLong inflight = new AtomicLong();
 
-  @Value("${hmdp.mq.enabled:false}")
+  @Value("${hmdp.business-kafka.enabled:false}")
   private boolean mqEnabled;
 
-  @Value("${hmdp.mq.lease-seconds:60}")
+  @Value("${hmdp.business-kafka.lease-seconds:60}")
   private int leaseSeconds;
 
-  @Value("${hmdp.mq.relay-batch-size:20}")
+  @Value("${hmdp.business-kafka.relay-batch-size:20}")
   private int batchSize;
 
-  @Value("${hmdp.mq.redelivery-seconds:300}")
+  @Value("${hmdp.business-kafka.redelivery-seconds:300}")
   private int redeliverySeconds;
 
   public OutboxRelayServiceImpl(
@@ -119,15 +119,16 @@ public class OutboxRelayServiceImpl implements IOutboxRelayService {
 
   private boolean deliverOutboxTask(BusinessOutboxTask task, String leaseOwner) {
     BusinessEvent event = BusinessEvent.from(task);
+    if (event.getDeliverAt() != null && event.getDeliverAt() > System.currentTimeMillis()) {
+      businessOutboxMapper.deferDeadline(task.getId(), leaseOwner);
+      return false;
+    }
+    event.setDeliveryId(leaseOwner);
     if (mqEnabled) {
       publishers.getObject().publish(event);
       // 快速消费可能已经完成；owner/state 条件防止 DONE 被覆盖成 SENT。
       businessOutboxMapper.markSent(task.getId(), leaseOwner);
       return true;
-    }
-    if (event.getDeliverAt() != null && event.getDeliverAt() > System.currentTimeMillis()) {
-      businessOutboxMapper.deferDeadline(task.getId(), leaseOwner);
-      return false;
     }
     consumer.consume(event, BusinessEventServiceImpl.resolveConsumerGroup(event.getKind()));
     return true;

@@ -11,6 +11,7 @@
         <result column="state" property="state"/>
         <result column="attempts" property="attempts"/>
         <result column="consume_attempts" property="consumeAttempts"/>
+        <result column="delivery_id" property="deliveryId"/>
         <result column="resource_path" property="resourcePath"/>
         <result column="created_at" property="createdAt"/>
         <result column="deliver_at" property="deliverAt"/>
@@ -27,8 +28,8 @@
     </insert>
 
     <insert id="insertDeadline">
-        INSERT INTO tb_business_outbox(kind,aggregate_id,user_id,deliver_at)
-        VALUES('ORDER_EXPIRE',#{orderId},#{userId},#{deadline})
+        INSERT INTO tb_business_outbox(kind,aggregate_id,user_id,deliver_at,next_attempt_at)
+        VALUES('ORDER_EXPIRE',#{orderId},#{userId},#{deadline},#{deadline})
     </insert>
 
     <select id="selectUnfinishedEvents" resultType="map">
@@ -46,7 +47,7 @@
 
     <update id="retryReviewEvent">
         UPDATE tb_business_outbox
-        SET state='PENDING',attempts=0,consume_attempts=0,next_attempt_at=NOW(),lease_owner=NULL,lease_until=NULL,last_error=NULL
+        SET state='PENDING',attempts=0,consume_attempts=0,next_attempt_at=NOW(),lease_owner=NULL,lease_until=NULL,last_error=NULL,delivery_id=NULL
         WHERE id=#{eventId} AND state='REVIEW'
     </update>
 
@@ -57,7 +58,7 @@
 
     <update id="retryFulfillment">
         UPDATE tb_business_outbox
-        SET state='PENDING',attempts=0,consume_attempts=0,next_attempt_at=NOW(),last_error=NULL
+        SET state='PENDING',attempts=0,consume_attempts=0,next_attempt_at=NOW(),last_error=NULL,delivery_id=NULL
         WHERE idempotency_key=#{idempotencyKey} AND state='REVIEW'
     </update>
 
@@ -105,22 +106,33 @@
         WHERE id=#{eventId}
     </update>
 
+    <update id="scheduleConsumeRetry">
+        UPDATE tb_business_outbox
+        SET state='PENDING',consume_attempts=consume_attempts+1,last_error=#{lastError},
+            next_attempt_at=TIMESTAMPADD(SECOND,#{delaySeconds},NOW(3)),
+            lease_owner=NULL,lease_until=NULL,sent_at=NULL,delivery_id=NULL
+        WHERE id=#{eventId}
+    </update>
+
     <update id="markReview">
         UPDATE tb_business_outbox
-        SET state='REVIEW',lease_owner=NULL,lease_until=NULL
+        SET state='REVIEW',lease_owner=NULL,lease_until=NULL,delivery_id=NULL
         WHERE id=#{eventId} AND state&lt;&gt;'DONE'
     </update>
 
     <select id="selectClaimableEvents" resultMap="BusinessOutboxTaskMap">
         SELECT *
         FROM tb_business_outbox
-        WHERE (state='PENDING' AND next_attempt_at&lt;=NOW()) OR (state='SENDING' AND lease_until&lt;NOW(3))
+        WHERE ((state='PENDING' AND next_attempt_at&lt;=NOW(3))
+            OR (state='SENDING' AND lease_until&lt;NOW(3)))
+          AND (deliver_at IS NULL OR deliver_at&lt;=NOW(3))
         ORDER BY id LIMIT #{limit} FOR UPDATE SKIP LOCKED
     </select>
 
     <update id="claimEvent">
         UPDATE tb_business_outbox
-        SET state='SENDING',lease_owner=#{leaseOwner},lease_until=TIMESTAMPADD(SECOND,#{leaseSeconds},NOW(3))
+        SET state='SENDING',lease_owner=#{leaseOwner},delivery_id=#{leaseOwner},
+            lease_until=TIMESTAMPADD(SECOND,#{leaseSeconds},NOW(3))
         WHERE id=#{eventId}
     </update>
 
@@ -138,19 +150,19 @@
 
     <update id="deferDeadline">
         UPDATE tb_business_outbox
-        SET state='PENDING',next_attempt_at=deliver_at,lease_owner=NULL,lease_until=NULL
+        SET state='PENDING',next_attempt_at=deliver_at,lease_owner=NULL,lease_until=NULL,delivery_id=NULL
         WHERE id=#{eventId} AND state='SENDING' AND lease_owner=#{leaseOwner}
     </update>
 
     <update id="recordSendFailure">
         UPDATE tb_business_outbox
-        SET attempts=#{attempts},next_attempt_at=TIMESTAMPADD(SECOND,#{delaySeconds},NOW()),state=#{state},last_error=#{lastError},lease_owner=NULL,lease_until=NULL
+        SET attempts=#{attempts},next_attempt_at=TIMESTAMPADD(SECOND,#{delaySeconds},NOW(3)),state=#{state},last_error=#{lastError},lease_owner=NULL,lease_until=NULL,delivery_id=NULL
         WHERE id=#{eventId} AND state='SENDING' AND lease_owner=#{leaseOwner}
     </update>
 
     <update id="redriveUnconsumedEvents">
         UPDATE tb_business_outbox
-        SET state='PENDING',next_attempt_at=NOW(),sent_at=NULL
+        SET state='PENDING',next_attempt_at=NOW(),sent_at=NULL,delivery_id=NULL
         WHERE state='SENT' AND sent_at&lt;TIMESTAMPADD(SECOND,#{sentAgeSeconds},NOW(3)) AND (deliver_at IS NULL OR deliver_at&lt;TIMESTAMPADD(SECOND,#{deadlineAgeSeconds},NOW(3)))
         ORDER BY id LIMIT 200
     </update>
@@ -158,7 +170,7 @@
     <select id="countPendingEvents" resultType="Long">
         SELECT COUNT(*)
         FROM tb_business_outbox
-        WHERE state IN ('PENDING','SENDING')
+        WHERE state IN ('PENDING','SENDING') AND (deliver_at IS NULL OR deliver_at&lt;=NOW(3))
     </select>
 
     <select id="countReviewEvents" resultType="Long">

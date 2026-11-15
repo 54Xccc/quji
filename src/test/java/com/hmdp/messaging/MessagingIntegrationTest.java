@@ -46,7 +46,10 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest(
-    properties = {"citylens.reliability.scheduling-enabled=false", "hmdp.mq.enabled=false"})
+    properties = {
+      "citylens.reliability.scheduling-enabled=false",
+      "hmdp.business-kafka.enabled=false"
+    })
 class MessagingIntegrationTest {
   @Autowired JdbcTemplate jdbc;
   @Autowired StringRedisTemplate redis;
@@ -99,6 +102,11 @@ class MessagingIntegrationTest {
 
   private BusinessEvent event(long id) {
     return BusinessEvent.from(businessOutboxMapper.selectEventById(id));
+  }
+
+  private BusinessEvent delivery(long id, String token) {
+    jdbc.update("UPDATE tb_business_outbox SET state='SENT',delivery_id=? WHERE id=?", token, id);
+    return event(id);
   }
 
   private String state(long id) {
@@ -267,14 +275,13 @@ class MessagingIntegrationTest {
         SKU,
         USER);
     long id = append("SECKILL_FULFILL", order);
-    assertTrue(
-        consumer.recordConsumptionFailure(
-            event(id),
-            "fulfillment",
-            "failed-fulfillment",
-            "{}",
-            new IllegalStateException("database stock conflict"),
-            5));
+    jdbc.update("UPDATE tb_business_outbox SET consume_attempts=4 WHERE id=?", id);
+    consumer.recordConsumptionFailure(
+        delivery(id, "fulfillment-5"),
+        "fulfillment",
+        "failed-fulfillment",
+        "{}",
+        new IllegalStateException("database stock conflict"));
     assertEquals("REVIEW", state(id));
     assertEquals(
         "REVIEW",
@@ -316,11 +323,11 @@ class MessagingIntegrationTest {
   void invalidPayloadCannotQuarantineAnotherBusinessEvent() {
     long id = append("ORDER_CREATED", 103);
     BusinessEvent wrong = event(id);
+    wrong.setDeliveryId("invalid-1");
     wrong.setAggregateId(999);
     assertThrows(IllegalArgumentException.class, () -> consumer.consume(wrong, "orders"));
-    assertTrue(
-        consumer.recordConsumptionFailure(
-            wrong, "orders", "invalid-1", "{}", new IllegalArgumentException("conflict"), 5));
+    consumer.recordConsumptionFailure(
+        wrong, "orders", "invalid-1", "{}", new IllegalArgumentException("conflict"));
     assertEquals("PENDING", state(id));
     assertNull(
         jdbc.queryForObject(
@@ -331,20 +338,21 @@ class MessagingIntegrationTest {
   @Test
   void persistentFailureIsQuarantinedAndManualRetryPreservesIdentity() {
     long id = append("ORDER_CREATED", 104);
-    BusinessEvent message = event(id);
     for (int attempt = 1; attempt <= 5; attempt++) {
+      String token = "failure-" + attempt;
+      BusinessEvent message = delivery(id, token);
+      for (int duplicate = 0; duplicate < 2; duplicate++) {
+        consumer.recordConsumptionFailure(
+            message, "orders", token, "{}", new IllegalStateException("storage unavailable"));
+      }
+      assertEquals(attempt == 5 ? "REVIEW" : "PENDING", state(id));
       assertEquals(
-          attempt == 5,
-          consumer.recordConsumptionFailure(
-              message,
-              "orders",
-              "failure-1",
-              "{}",
-              new IllegalStateException("storage unavailable"),
-              attempt));
+          attempt,
+          jdbc.queryForObject(
+              "SELECT consume_attempts FROM tb_business_outbox WHERE id=?", Integer.class, id));
     }
     assertEquals("REVIEW", state(id));
-    assertThrows(IllegalStateException.class, () -> consumer.consume(message, "orders"));
+    assertThrows(IllegalStateException.class, () -> consumer.consume(event(id), "orders"));
     jdbc.update(
         "UPDATE tb_business_outbox SET "
             + "state='PENDING',attempts=0,consume_attempts=0,next_attempt_at=NOW() "

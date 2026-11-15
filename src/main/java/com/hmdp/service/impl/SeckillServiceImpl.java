@@ -114,11 +114,8 @@ public class SeckillServiceImpl implements ISeckillService {
   @Value("${citylens.reliability.scheduling-enabled:true}")
   private boolean enabled;
 
-  @Value("${hmdp.mq.enabled:false}")
-  private boolean mqEnabled;
-
-  @Value("${hmdp.mq.seckill-enabled:false}")
-  private boolean mqSeckill;
+  @Value("${hmdp.business-kafka.enabled:false}")
+  private boolean businessKafkaEnabled;
 
   public SeckillServiceImpl(
       StringRedisTemplate redis,
@@ -302,7 +299,7 @@ public class SeckillServiceImpl implements ISeckillService {
       registerAndValidateReservation(order);
       reservationMatched = true;
       if (ReservationState.PROCESSING.matches(queryReservationState(order.getId()))) {
-        if (mqEnabled && mqSeckill) {
+        if (businessKafkaEnabled) {
           enqueueFulfillmentTask(order);
           // The durable outbox owns delivery now. Preserve the Lua PROCESSING display
           // state.

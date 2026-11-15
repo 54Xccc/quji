@@ -58,6 +58,11 @@ public interface BusinessOutboxMapper {
 
   int recordConsumeFailure(@Param("lastError") String lastError, @Param("eventId") Long eventId);
 
+  int scheduleConsumeRetry(
+      @Param("lastError") String lastError,
+      @Param("delaySeconds") Long delaySeconds,
+      @Param("eventId") Long eventId);
+
   int markReview(@Param("eventId") Long eventId);
 
   List<BusinessOutboxTask> selectClaimableEvents(@Param("limit") Integer limit);

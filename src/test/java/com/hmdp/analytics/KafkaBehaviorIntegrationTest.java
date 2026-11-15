@@ -23,7 +23,7 @@ import org.springframework.test.annotation.DirtiesContext;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "citylens.reliability.scheduling-enabled=false",
-      "hmdp.mq.enabled=false",
+      "hmdp.business-kafka.enabled=false",
       "hmdp.analytics.enabled=true",
       "hmdp.analytics.group=hmdp-integration-heat"
     })

@@ -34,18 +34,17 @@ import org.springframework.transaction.support.TransactionTemplate;
 @SpringBootTest(
     properties = {
       "citylens.reliability.scheduling-enabled=false",
-      "hmdp.mq.enabled=true",
-      "hmdp.mq.seckill-enabled=true",
-      "hmdp.mq.group-prefix=hmdp-integration"
+      "hmdp.business-kafka.enabled=true",
+      "hmdp.business-kafka.group=quji-business-integration"
     })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class RocketMqIntegrationTest {
+class KafkaBusinessIntegrationTest {
   @Autowired JdbcTemplate jdbc;
   @Autowired BusinessOutboxMapper businessOutboxMapper;
   @Autowired TransactionTemplate transactions;
   @Autowired BusinessOutboxServiceImpl outbox;
   @Autowired OutboxRelayServiceImpl relay;
-  @Autowired RocketMqTransport transport;
+  @Autowired KafkaBusinessTransport transport;
   @Autowired VoucherOrderServiceImpl orders;
   @Autowired SeckillServiceImpl coordinator;
   @Autowired StringRedisTemplate redis;
@@ -60,7 +59,7 @@ class RocketMqIntegrationTest {
     jdbc.update(
         "INSERT INTO "
             + "tb_voucher(id,shop_id,title,rules,pay_value,actual_value,type,status) "
-            + "VALUES(?,1,'rocket-test','rules',100,200,0,1)",
+            + "VALUES(?,1,'kafka-test','rules',100,200,0,1)",
         SKU);
     UserDTO user = new UserDTO();
     user.setId(USER);
@@ -80,7 +79,7 @@ class RocketMqIntegrationTest {
       }
       Thread.sleep(100);
     }
-    fail("真实 RocketMQ 消费未在 45 秒内完成");
+    fail("真实 Kafka 消费未在 45 秒内完成");
   }
 
   @Test
@@ -91,6 +90,7 @@ class RocketMqIntegrationTest {
           return null;
         });
     long id = jdbc.queryForObject("SELECT MAX(id) FROM tb_business_outbox", Long.class);
+    relay.relayOutboxBatch();
     BusinessEvent event = BusinessEvent.from(businessOutboxMapper.selectEventById(id));
     for (int i = 0; i < 5; i++) {
       transport.publish(event);
@@ -124,19 +124,25 @@ class RocketMqIntegrationTest {
         "UPDATE tb_voucher_order SET expire_at=TIMESTAMPADD(SECOND,4,NOW(3)) WHERE id=?", unpaid);
     jdbc.update(
         "UPDATE tb_business_outbox SET deliver_at=(SELECT expire_at FROM "
-            + "tb_voucher_order WHERE id=?) WHERE id=?",
+            + "tb_voucher_order WHERE id=?), next_attempt_at=deliver_at WHERE id=?",
         unpaid,
         deadline);
     relay.relayOutboxBatch();
+    assertEquals(
+        "PENDING",
+        jdbc.queryForObject(
+            "SELECT state FROM tb_business_outbox WHERE id=?", String.class, deadline));
     assertEquals(
         1,
         jdbc.queryForObject(
             "SELECT status FROM tb_voucher_order WHERE id=?", Integer.class, unpaid));
     await(
-        () ->
-            jdbc.queryForObject(
-                    "SELECT status FROM tb_voucher_order WHERE id=?", Integer.class, unpaid)
-                == 4);
+        () -> {
+          relay.relayOutboxBatch();
+          return jdbc.queryForObject(
+                  "SELECT status FROM tb_voucher_order WHERE id=?", Integer.class, unpaid)
+              == 4;
+        });
     long paid = ((Number) orders.orderOrdinaryVoucher(SKU).getData()).longValue();
     assertNotEquals(unpaid, paid);
     long paidDeadline =
@@ -148,26 +154,75 @@ class RocketMqIntegrationTest {
         "UPDATE tb_voucher_order SET expire_at=TIMESTAMPADD(SECOND,4,NOW(3)) WHERE id=?", paid);
     jdbc.update(
         "UPDATE tb_business_outbox SET deliver_at=(SELECT expire_at FROM "
-            + "tb_voucher_order WHERE id=?) WHERE id=?",
+            + "tb_voucher_order WHERE id=?), next_attempt_at=deliver_at WHERE id=?",
         paid,
         paidDeadline);
     assertTrue(orders.payMockOrder(paid, 100L).getSuccess());
     relay.relayOutboxBatch();
     await(
-        () ->
-            "DONE"
-                .equals(
-                    jdbc.queryForObject(
-                        "SELECT state FROM tb_business_outbox WHERE id=?",
-                        String.class,
-                        paidDeadline)));
+        () -> {
+          relay.relayOutboxBatch();
+          return "DONE".equals(
+              jdbc.queryForObject(
+                  "SELECT state FROM tb_business_outbox WHERE id=?", String.class, paidDeadline));
+        });
     assertEquals(
         2,
         jdbc.queryForObject("SELECT status FROM tb_voucher_order WHERE id=?", Integer.class, paid));
   }
 
   @Test
-  void luaStreamHandoffAndRocketFulfillmentRemainIdempotent() throws Exception {
+  void failedDeliveryIsRescheduledAndDoesNotBlockOtherBusinessEvents() throws Exception {
+    long missingReservation = 916099;
+    transactions.execute(
+        tx -> {
+          outbox.appendBusinessEvent("SECKILL_FULFILL", missingReservation, USER);
+          outbox.appendBusinessEvent("ORDER_CREATED", missingReservation, USER);
+          return null;
+        });
+    long id =
+        jdbc.queryForObject(
+            "SELECT MAX(id) FROM tb_business_outbox "
+                + "WHERE aggregate_id=? AND kind='SECKILL_FULFILL'",
+            Long.class,
+            missingReservation);
+    long healthy =
+        jdbc.queryForObject(
+            "SELECT MAX(id) FROM tb_business_outbox "
+                + "WHERE aggregate_id=? AND kind='ORDER_CREATED'",
+            Long.class,
+            missingReservation);
+    relay.relayOutboxBatch();
+    await(() -> attempts(id) == 1);
+    await(() -> "DONE".equals(state(healthy)));
+    assertEquals("PENDING", state(id));
+    for (int attempt = 2; attempt <= DeliveryRetryPolicy.MAX_CONSUME_ATTEMPTS; attempt++) {
+      jdbc.update("UPDATE tb_business_outbox SET next_attempt_at=NOW() WHERE id=?", id);
+      int target = attempt;
+      await(
+          () -> {
+            relay.relayOutboxBatch();
+            return attempts(id) == target;
+          });
+    }
+    assertEquals("REVIEW", state(id));
+    assertEquals(
+        1L,
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM tb_message_failure WHERE event_id=?", Long.class, id));
+  }
+
+  private int attempts(long id) {
+    return jdbc.queryForObject(
+        "SELECT consume_attempts FROM tb_business_outbox WHERE id=?", Integer.class, id);
+  }
+
+  private String state(long id) {
+    return jdbc.queryForObject("SELECT state FROM tb_business_outbox WHERE id=?", String.class, id);
+  }
+
+  @Test
+  void luaStreamHandoffAndKafkaFulfillmentRemainIdempotent() throws Exception {
     long sku = 916010;
     jdbc.update("DELETE FROM tb_seckill_reservation WHERE voucher_id=?", sku);
     jdbc.update("DELETE FROM tb_voucher_order WHERE voucher_id=?", sku);

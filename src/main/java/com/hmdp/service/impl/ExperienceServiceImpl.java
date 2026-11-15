@@ -52,7 +52,7 @@ public class ExperienceServiceImpl implements IExperienceService {
   @Value("${hmdp.analytics.enabled:false}")
   private boolean analyticsEnabled;
 
-  @Value("${hmdp.mq.enabled:false}")
+  @Value("${hmdp.business-kafka.enabled:false}")
   private boolean mqEnabled;
 
   @Value("${hmdp.cdc.enabled:false}")

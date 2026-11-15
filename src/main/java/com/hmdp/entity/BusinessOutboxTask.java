@@ -17,6 +17,8 @@ public class BusinessOutboxTask {
   private String state;
   private int attempts;
   private int consumeAttempts;
+  /** 标识当前投递，过期或已被重试替代的消息不再施加业务效果。 */
+  private String deliveryId;
   /** 仅媒体删除任务使用，其他事件可以为空。 */
   private String resourcePath;
   /** 事件发生时间；Feed 续传沿用原值，防止排序时间随重试改变。 */

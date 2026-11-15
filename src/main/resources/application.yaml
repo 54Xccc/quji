@@ -67,17 +67,14 @@ hmdp:
     bootstrap-servers: ${HMDP_KAFKA_SERVERS:127.0.0.1:9092}
     topic: HmdpShopBehavior
     group: ${HMDP_KAFKA_GROUP:hmdp-heat-v1}
-  mq:
-    enabled: ${HMDP_MQ_ENABLED:false}
-    seckill-enabled: ${HMDP_MQ_SECKILL_ENABLED:false}
-    nameserver: ${HMDP_MQ_NAMESERVER:127.0.0.1:9876}
-    group-prefix: ${HMDP_MQ_GROUP_PREFIX:hmdp}
-    business-topic: HmdpBusiness
-    deadline-topic: HmdpOrderDeadline
+  business-kafka:
+    enabled: ${HMDP_BUSINESS_KAFKA_ENABLED:false}
+    bootstrap-servers: ${HMDP_KAFKA_SERVERS:127.0.0.1:9092}
+    topic: QujiBusiness
+    group: ${HMDP_BUSINESS_KAFKA_GROUP:quji-business-v1}
     consumer-enabled: true
     lease-seconds: 60
     relay-batch-size: 20
-    send-timeout-ms: 3000
   monitor-token: ${HMDP_MONITOR_TOKEN:}
   cache:
     enabled: true

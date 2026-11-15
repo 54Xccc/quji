@@ -6,11 +6,10 @@ import com.hmdp.messaging.BusinessEvent;
 public interface IBusinessEventService {
   void consume(BusinessEvent event, String group);
 
-  boolean recordConsumptionFailure(
+  void recordConsumptionFailure(
       BusinessEvent event,
       String group,
       String brokerId,
       String payload,
-      RuntimeException failure,
-      int deliveries);
+      RuntimeException failure);
 }

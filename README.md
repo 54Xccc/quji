@@ -4,7 +4,7 @@
 
 ## 本地启动
 
-需要 Docker Desktop 或带 Compose v2 的 Docker。首次启动会拉取镜像、下载 Maven 依赖，并初始化数据库与消息队列。
+需要 Docker Desktop 或带 Compose v2 的 Docker。首次启动会拉取镜像、下载 Maven 依赖，并初始化数据库和两个 Kafka Topic。
 
 ```bash
 docker compose -p quji -f dev/docker-compose.yml up -d
@@ -31,15 +31,26 @@ docker compose -p quji -f dev/docker-compose.yml logs -f java
 | --- | --- |
 | 活动浏览与变更 | Spring Boot、MyBatis-Plus、MySQL、Flyway；详情沿用请求内缓存、Caffeine、Memcached、Redis 和 MySQL；Outbox 与 Canal 处理缓存失效 |
 | 附近活动 | Redis GEO 在 10 公里内查找并按距离排序 |
-| 限额报名 | Redis Lua 原子校验窗口、用户资格与库存；Redis Stream 接力；RocketMQ 和 MySQL 执行异步确认与库存条件扣减；Redisson、唯一约束、重试和补偿避免重复履约 |
+| 限额报名 | Redis Lua 原子校验窗口、用户资格与库存；Redis Stream 接力；Kafka `QujiBusiness` Topic 异步确认，MySQL 条件扣减库存；Redisson、唯一约束、重试和补偿避免重复履约 |
 | 入场核验 | 每个已确认报名生成独立入场码；管理接口在入场窗口内一次性写入核验状态、时间和操作人 |
 | 活动体验 | Vue 2 页面；图片归属校验、点赞、关注和异步 Feed；Redis Bitmap 记录每日打卡 |
-| 活动热榜 | Kafka 汇总活动浏览和报名事件；按事件 ID 去重，聚合近 5 或 60 分钟的数据 |
+| 活动热榜 | Kafka `HmdpShopBehavior` Topic 汇总活动浏览和报名事件；按事件 ID 去重，聚合近 5 或 60 分钟的数据 |
 | 运行与观察 | Nginx、Docker Compose；Actuator、Prometheus 和 Alertmanager；首页底部的「技术体验」可观察原有技术链路 |
 
 活动在课程目录表中拥有独立分类与场地字段，场次包含报名时间、活动时间与容量。数据库用增量迁移添加新字段并写入趣集演示数据。活动前台仅展示趣集活动，历史 API 和订单迁移路径可继续用于回归与技术演示。
 
 当前趣集场次为免费报名、固定时间、每人每场一位。管理页支持创建与编辑活动、发布场次和核验入场。现有普通订单的模拟支付和超时关单仍可在原有技术演示路径运行。体验环境从服务端日志获取验证码。
+
+### 从 RocketMQ 版本升级
+
+复用原来的 Compose 项目名和数据库卷。先停止旧版本的所有 Java 实例，再启动新版本。Flyway V12 会让旧 Broker 上已投递但尚未确认的 Outbox 任务重新排队，并保留事件号和 Inbox 回执。
+
+```bash
+docker compose -p quji -f dev/docker-compose.yml stop java
+docker compose -p quji -f dev/docker-compose.yml up -d --remove-orphans
+```
+
+业务 Topic 的消费者在事务完成、重试计划落库或事件已隔离后提交 offset。业务失败从 MySQL Outbox 退避重投，达到上限后进入人工复核。普通订单的关单任务在截止时间到达后才投递，数据库定时扫描仍提供兜底。
 
 ## API
 

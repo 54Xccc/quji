@@ -37,52 +37,9 @@ services:
   kafka-init:
     image: apache/kafka:3.9.1
     entrypoint: [/bin/sh, -c]
-    command: ['exec /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic HmdpShopBehavior --partitions 3 --replication-factor 1 --config retention.ms=259200000']
+    command: ['set -e; /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic HmdpShopBehavior --partitions 3 --replication-factor 1 --config retention.ms=259200000; exec /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic QujiBusiness --partitions 3 --replication-factor 1 --config retention.ms=259200000']
     depends_on:
       kafka:
-        condition: service_healthy
-  mq-nameserver:
-    image: apache/rocketmq:5.3.2
-    platform: linux/amd64
-    command: [sh, mqnamesrv]
-    environment:
-      JAVA_OPT_EXT: '-Xms128m -Xmx128m -Xmn64m'
-  mq-volume-init:
-    image: apache/rocketmq:5.3.2
-    platform: linux/amd64
-    user: '0'
-    command: [sh, -c, 'chown rocketmq:rocketmq /home/rocketmq/store']
-    volumes:
-      - rocketmq-data:/home/rocketmq/store
-  rocketmq:
-    image: apache/rocketmq:5.3.2
-    platform: linux/amd64
-    command: [sh, mqbroker, -c, /etc/rocketmq/broker.conf]
-    environment:
-      JAVA_OPT_EXT: '-Xms512m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=256m'
-    volumes:
-      - ./rocketmq/broker.conf:/etc/rocketmq/broker.conf:ro
-      - rocketmq-data:/home/rocketmq/store
-    depends_on:
-      mq-nameserver:
-        condition: service_started
-      mq-volume-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: [CMD-SHELL, 'sh mqadmin clusterList -n mq-nameserver:9876 | grep -q hmdp-broker']
-      interval: 10s
-      timeout: 8s
-      retries: 30
-  mq-init:
-    image: apache/rocketmq:5.3.2
-    platform: linux/amd64
-    command: [sh, /etc/rocketmq/init.sh]
-    environment:
-      JAVA_OPT_EXT: '-Xms64m -Xmx128m'
-    volumes:
-      - ./rocketmq/init.sh:/etc/rocketmq/init.sh:ro
-    depends_on:
-      rocketmq:
         condition: service_healthy
   mysql:
     image: mysql:8.0
@@ -146,8 +103,7 @@ services:
       HMDP_CDC_ENABLED: 'false'
       HMDP_CDC_HOST: canal
       HMDP_CDC_SCHEMA: hmdp_optimization_test
-      HMDP_MQ_ENABLED: 'false'
-      HMDP_MQ_NAMESERVER: mq-nameserver:9876
+      HMDP_BUSINESS_KAFKA_ENABLED: 'false'
       HMDP_ANALYTICS_ENABLED: 'false'
       HMDP_KAFKA_SERVERS: kafka:9092
       HMDP_MONITOR_TOKEN: ${HMDP_MONITOR_TOKEN:-hmdp_dev_metrics}
@@ -163,14 +119,11 @@ services:
         condition: service_started
       canal:
         condition: service_started
-      mq-init:
-        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
-    command: [mvn, -B, '-DargLine=-Xmx512m', '-Dspring.test.context.cache.maxSize=2', '-Dtest=CacheReadTraceTest,ExperienceServiceTest,ExperienceIntegrationTest,MapperArchitectureTest,MessagingIntegrationTest,RocketMqIntegrationTest,BehaviorAggregationIntegrationTest,KafkaBehaviorIntegrationTest,ReliabilityIntegrationTest,SeckillMessageTest,CacheConcurrencyTest,AccessGuardTest,LoginCodeTest,VoucherOrderReliabilityTest,ShopCacheCompatibilityTest,ShopSearchBoundaryTest,MockPaymentTest,UserLogoutTest,RequestCacheScopeTest,CacheLayersIntegrationTest,CanalBatchTest,CacheChangeProjectorTest,CacheCdcIntegrationTest,CacheBenchmarkIntegrationTest', test]
+    command: [mvn, -B, '-DargLine=-Xmx512m', '-Dspring.test.context.cache.maxSize=2', '-Dtest=CacheReadTraceTest,ExperienceServiceTest,ExperienceIntegrationTest,MapperArchitectureTest,MessagingIntegrationTest,KafkaBusinessIntegrationTest,BehaviorAggregationIntegrationTest,KafkaBehaviorIntegrationTest,ReliabilityIntegrationTest,SeckillMessageTest,CacheConcurrencyTest,AccessGuardTest,LoginCodeTest,VoucherOrderReliabilityTest,ShopCacheCompatibilityTest,ShopSearchBoundaryTest,MockPaymentTest,UserLogoutTest,RequestCacheScopeTest,CacheLayersIntegrationTest,CanalBatchTest,CacheChangeProjectorTest,CacheCdcIntegrationTest,CacheBenchmarkIntegrationTest', test]
 volumes:
   kafka-data:
-  rocketmq-data:
   canal-meta:
   maven-cache:
     external: true

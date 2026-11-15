@@ -10,12 +10,17 @@ groups:
         expr: max(hmdp_outbox_review) > 0
         for: 1m
         labels: {severity: warning}
-        annotations: {summary: "RocketMQ 业务事件需要人工复核"}
+        annotations: {summary: "Kafka 业务事件需要人工复核"}
       - alert: BusinessEventsSendRetry
         expr: sum(rate(hmdp_mq_sends_total{result="retry"}[5m])) > 0.1
         for: 1m
         labels: {severity: warning}
-        annotations: {summary: "RocketMQ 投递未确认，Outbox 正在退避重试"}
+        annotations: {summary: "Kafka 业务消息投递未确认，Outbox 正在退避重试"}
+      - alert: BusinessKafkaConsumerStopped
+        expr: hmdp_business_kafka_consumer_running == 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "Kafka 业务消费者已停止"}
       - alert: BehaviorConsumerStopped
         expr: hmdp_kafka_consumer_running == 0
         for: 1m
